@@ -208,6 +208,30 @@ EOF;
     }
 
     /**
+     * Test that non-breaking spaces (U+00A0) in CSV fields are stripped on import.
+     *
+     * @covers \tool_uploaduser\process::process_line
+     */
+    public function test_import_strips_non_breaking_space(): void {
+        global $DB;
+
+        $this->resetAfterTest();
+        $this->setAdminUser();
+
+        // Build a CSV with U+00A0 (bytes C2 A0) appended to the email value.
+        $nbsp = "\xC2\xA0";
+        $csv = "username,firstname,lastname,email,password\n" .
+               "nbsptest,NBSP,Test,nbsptest@example.com{$nbsp},Testpass1!\n";
+
+        $this->process_csv_upload($csv, ['--uutype=' . UU_USER_ADDNEW]);
+
+        $email = $DB->get_field('user', 'email', ['username' => 'nbsptest']);
+        $this->assertNotFalse($email, 'User nbsptest should have been created');
+        $this->assertStringNotContainsString($nbsp, $email, 'Email must not contain U+00A0 after import');
+        $this->assertSame('nbsptest@example.com', $email);
+    }
+
+    /**
      * Generate cli_helper and mock $_SERVER['argv']
      *
      * @param string $filecontent

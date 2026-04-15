@@ -374,10 +374,10 @@ class process {
                     $user->{$key['text']}   = $value;
                     $user->{$key['format']} = FORMAT_MOODLE;
                 } else {
-                    $user->$key = trim($value);
+                    $user->$key = trim(str_replace("\xC2\xA0", ' ', $value));
                 }
             } else {
-                $user->$key = trim($value);
+                $user->$key = trim(str_replace("\xC2\xA0", ' ', $value));
             }
 
             if (in_array($key, $this->upt->columns)) {
