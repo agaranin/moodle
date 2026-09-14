@@ -246,6 +246,9 @@ class completion_info {
     /* @var array Completion criteria {@link completion_info::get_criteria()}  */
     private $criteria;
 
+    /** @var array Keys ("cmid_userid") of the get_data() calls currently being resolved. */
+    private static $getdatainprogress = [];
+
     /**
      * Return array of aggregation methods
      * @return array
@@ -1005,6 +1008,58 @@ class completion_info {
      *                  - Custom completion statuses defined by the activity module plugin.
      */
     public function get_data($cm, $wholecourse = false, $userid = 0, $unused = null) {
+        global $USER;
+
+        if (!$userid) {
+            $userid = $USER->id;
+        }
+
+        // Some callers pass $cm as an object with ID only. Make sure course is set as well.
+        if ($cm instanceof stdClass && !isset($cm->course)) {
+            $cm->course = $this->course_id;
+        }
+
+        // Fetching completion data loads the module dynamic data, which evaluates its availability,
+        // which may in turn ask for the completion of another module that depends back on this one.
+        // Such a chain has no natural end, so cut it here and report the activity as incomplete.
+        // An activity that takes part in one can never be completed anyway, as every activity in the
+        // chain waits for another one, so incomplete is both the safe answer and the truthful one.
+        $cmid = $cm->id ?? 0;
+        $key = $cmid . '_' . $userid;
+        if (isset(self::$getdatainprogress[$key])) {
+            return (object) [
+                'id' => 0,
+                'coursemoduleid' => $cmid,
+                'userid' => $userid,
+                'completionstate' => COMPLETION_INCOMPLETE,
+                'viewed' => 0,
+                'overrideby' => null,
+                'timemodified' => 0,
+            ];
+        }
+
+        self::$getdatainprogress[$key] = true;
+        try {
+            return $this->fetch_data($cm, $wholecourse, $userid, $unused);
+        } finally {
+            unset(self::$getdatainprogress[$key]);
+        }
+    }
+
+    /**
+     * Obtains completion data for a particular activity and user.
+     *
+     * Only ever called from get_data(), which guards it against circular availability dependencies.
+     *
+     * @param stdClass|cm_info $cm Activity; only required field is ->id
+     * @param bool $wholecourse If true (default false) then, when necessary to
+     *   fill the cache, retrieves information from the entire course not just for
+     *   this one activity
+     * @param int $userid User ID or 0 (default) for current user
+     * @param mixed $unused This parameter has been deprecated since 4.0 and should not be used anymore.
+     * @return object Completion data, see get_data().
+     */
+    private function fetch_data($cm, $wholecourse = false, $userid = 0, $unused = null) {
         global $USER, $DB;
 
         if ($unused !== null) {
