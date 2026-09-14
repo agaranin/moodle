@@ -930,6 +930,66 @@ final class completionlib_test extends advanced_testcase {
     }
 
     /**
+     * Activities restricting access on each other's completion must not recurse indefinitely.
+     *
+     * Resolving completion loads the activity dynamic data, which evaluates its access
+     * restrictions, which asks for the completion of the activities those restrictions name. When
+     * one of those leads back to the activity the resolution started from, the chain has no
+     * natural end.
+     *
+     * @covers ::get_data
+     */
+    public function test_get_data_circular_availability(): void {
+        global $CFG, $DB;
+
+        $CFG->enableavailability = true;
+        $this->setup_data();
+        $this->setAdminUser();
+
+        $generator = $this->getDataGenerator()->get_plugin_generator('mod_assign');
+        $options = [
+            'course' => $this->course->id,
+            'completion' => COMPLETION_TRACKING_AUTOMATIC,
+            'completionsubmit' => 1,
+        ];
+        $first = get_coursemodule_from_instance('assign', $generator->create_instance($options)->id);
+        $second = get_coursemodule_from_instance('assign', $generator->create_instance($options)->id);
+        $third = get_coursemodule_from_instance('assign', $generator->create_instance($options)->id);
+
+        $restriction = function (array $cmids): string {
+            $conditions = [];
+            foreach ($cmids as $cmid) {
+                $conditions[] = (object) ['type' => 'completion', 'cm' => $cmid, 'e' => COMPLETION_COMPLETE];
+            }
+            return json_encode((object) [
+                'op' => '&',
+                'c' => $conditions,
+                'showc' => array_fill(0, count($conditions), true),
+            ]);
+        };
+
+        // The first activity waits for the other two, and both of those wait for the first one.
+        $DB->set_field('course_modules', 'availability', $restriction([$second->id, $third->id]), ['id' => $first->id]);
+        $DB->set_field('course_modules', 'availability', $restriction([$first->id]), ['id' => $second->id]);
+        $DB->set_field('course_modules', 'availability', $restriction([$first->id]), ['id' => $third->id]);
+        rebuild_course_cache($this->course->id, true);
+
+        // Resolving this on behalf of another user used to recurse until the process ran out of memory.
+        $completioninfo = new completion_info($this->course);
+        $result = $completioninfo->get_data($first, false, $this->user->id);
+
+        $this->assertEquals($first->id, $result->coursemoduleid);
+        $this->assertEquals($this->user->id, $result->userid);
+        $this->assertEquals(COMPLETION_INCOMPLETE, $result->completionstate);
+
+        // The other two activities in the chain resolve as well, rather than recursing in their turn.
+        $secondresult = $completioninfo->get_data($second, false, $this->user->id);
+        $thirdresult = $completioninfo->get_data($third, false, $this->user->id);
+        $this->assertEquals(COMPLETION_INCOMPLETE, $secondresult->completionstate);
+        $this->assertEquals(COMPLETION_INCOMPLETE, $thirdresult->completionstate);
+    }
+
+    /**
      * Tests for get_completion_data().
      *
      * @covers ::get_completion_data
